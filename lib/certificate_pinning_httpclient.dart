@@ -175,10 +175,6 @@ class CertificatePinningHttpClient implements HttpClient {
   // request forces a pinned HttpClient to be used.
   HttpClient _delegatePinnedHttpClient = HttpClient();
 
-  // the security context used to create the pinned HttpClient
-  // Keep a reference to avoid recreating HttpClient if there is no change
-  SecurityContext? _securityContext;
-
   Completer<HttpClient>? _createClientCompleter;
 
   // state required to implement getters and setters required by the HttpClient interface
@@ -235,15 +231,7 @@ class CertificatePinningHttpClient implements HttpClient {
       final securityContext =
           await _CertificatePinningService._pinnedSecurityContext(
               url, _validPins);
-      if (_securityContext == securityContext) {
-        // if the security context has not changed, we can reuse the existing http client
-        _log.d("$_tag: Reusing existing pinned HttpClient for $url");
-        completer.complete(_delegatePinnedHttpClient);
-        _createClientCompleter = null;
-        return null;
-      }
       newHttpClient = HttpClient(context: securityContext);
-      _securityContext = securityContext;
     }
 
     // copy state from old HttpClient to the new one, including state held on this class which cannot be retrieved
