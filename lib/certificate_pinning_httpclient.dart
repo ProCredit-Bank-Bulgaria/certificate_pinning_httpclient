@@ -251,6 +251,7 @@ class CertificatePinningHttpClient implements HttpClient {
     newHttpClient.badCertificateCallback = _pinningFailureCallback;
 
     completer.complete(newHttpClient);
+    _createClientCompleter = null;
 
     // provide the new http client with a pinned security context
     return newHttpClient;
@@ -279,7 +280,6 @@ class CertificatePinningHttpClient implements HttpClient {
     // and create a new one with the correct pinning, on every request
     final url = Uri(scheme: "https", host: host, port: port, path: path);
     final httpClient = await _createPinnedHttpClient(url);
-    _delegatePinnedHttpClient.close();
     _delegatePinnedHttpClient = httpClient;
 
     // delegate the open operation to the pinned http client
@@ -295,7 +295,6 @@ class CertificatePinningHttpClient implements HttpClient {
     // To ensure runtime MitM attacks, tear down the delegate pinned HttpClient
     // and create a new one with the correct pinning, on every request
     final httpClient = await _createPinnedHttpClient(url);
-    _delegatePinnedHttpClient.close();
     _delegatePinnedHttpClient = httpClient;
 
     // delegate the open operation to the pinned http client
