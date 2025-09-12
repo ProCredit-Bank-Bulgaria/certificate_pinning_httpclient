@@ -22,7 +22,7 @@ class _CertificatePinningService {
   /// @return a list of certificates (each as a Uint8list) for the host specified in the URL, null if an error occurred,
   /// or an empty list if no suitable certificates are available.
   static Future<List<Uint8List>?> _getHostCertificates(Uri url) async {
-    List<Uint8List>? hostCertificates = [];
+    List<Uint8List>? hostCertificates;
     try {
       final arguments = <String, String>{
         "url": url.toString(),
