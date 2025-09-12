@@ -1,7 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
-import 'dart:typed_data';
 import 'package:asn1lib/asn1lib.dart';
 import 'package:crypto/crypto.dart';
 import 'package:flutter/services.dart';
@@ -176,12 +175,9 @@ class CertificatePinningHttpClient implements HttpClient {
   // request forces a pinned HttpClient to be used.
   HttpClient _delegatePinnedHttpClient = HttpClient();
 
-  // the host to which the delegate pinned HttpClient delegate is connected and, optionally, pinning. Used to detect when to
-  // re-create the delegate pinned HttpClient.
-  String? _connectedHost;
-
-  // indicates whether the HttpClient has been closed by calling close().
-  bool _isClosed = false;
+  // the security context used to create the pinned HttpClient
+  // Keep a reference to avoid recreating HttpClient if there is no change
+  SecurityContext? _securityContext;
 
   Completer<HttpClient>? _createClientCompleter;
 
@@ -218,7 +214,6 @@ class CertificatePinningHttpClient implements HttpClient {
     // reset host certificates and delegate pinned HttpClient connected host to force them to be recreated
     _log.d("$_tag: Pinning failure callback for $host");
     _CertificatePinningService._removeCertificates(host);
-    _connectedHost = null;
     return false;
   }
 
@@ -227,7 +222,7 @@ class CertificatePinningHttpClient implements HttpClient {
   ///
   /// @param url for which to set up pinning
   /// @return the new HTTP client
-  Future<HttpClient> _createPinnedHttpClient(Uri url) async {
+  Future<HttpClient?> _createPinnedHttpClient(Uri url) async {
     final completer = Completer<HttpClient>();
     _createClientCompleter = completer;
 
@@ -240,11 +235,16 @@ class CertificatePinningHttpClient implements HttpClient {
       final securityContext =
           await _CertificatePinningService._pinnedSecurityContext(
               url, _validPins);
+      if (_securityContext == securityContext) {
+        // if the security context has not changed, we can reuse the existing http client
+        _log.d("$_tag: Reusing existing pinned HttpClient for $url");
+        completer.complete(_delegatePinnedHttpClient);
+        _createClientCompleter = null;
+        return null;
+      }
       newHttpClient = HttpClient(context: securityContext);
+      _securityContext = securityContext;
     }
-
-    // remember the connected host so we don't have to repeat this for connections to the same host
-    _connectedHost = url.host;
 
     // copy state from old HttpClient to the new one, including state held on this class which cannot be retrieved
     final HttpClient oldHttpClient = _delegatePinnedHttpClient;
@@ -287,26 +287,23 @@ class CertificatePinningHttpClient implements HttpClient {
   void updateSpkiHashes(List<String> spkiHashes) {
     _validPins = spkiHashes.toSet();
     _log.d("$_tag: Updated pins to ${_validPins.length} SPKI hashes");
-    // reset the connected host so that the next open operation will create a new pinned HttpClient
-    _connectedHost = null;
   }
 
   @override
   Future<HttpClientRequest> open(
       String method, String host, int port, String path) async {
-    // if already closed then just delegate
-    if (_isClosed) {
-      return _delegatePinnedHttpClient.open(method, host, port, path);
-    }
-
     if (_createClientCompleter != null) {
       await _createClientCompleter!.future;
     }
 
+    // To ensure runtime MitM attacks, tear down the delegate pinned HttpClient
+    // and create a new one with the correct pinning, on every request
     final url = Uri(scheme: "https", host: host, port: port, path: path);
     final httpClient = await _createPinnedHttpClient(url);
-    _delegatePinnedHttpClient.close();
-    _delegatePinnedHttpClient = httpClient;
+    if (httpClient != null) {
+      _delegatePinnedHttpClient.close();
+      _delegatePinnedHttpClient = httpClient;
+    }
 
     // delegate the open operation to the pinned http client
     return _delegatePinnedHttpClient.open(method, host, port, path);
@@ -314,18 +311,17 @@ class CertificatePinningHttpClient implements HttpClient {
 
   @override
   Future<HttpClientRequest> openUrl(String method, Uri url) async {
-    // if already closed then just delegate
-    if (_isClosed) {
-      return _delegatePinnedHttpClient.openUrl(method, url);
-    }
-
     if (_createClientCompleter != null) {
       await _createClientCompleter!.future;
     }
 
+    // To ensure runtime MitM attacks, tear down the delegate pinned HttpClient
+    // and create a new one with the correct pinning, on every request
     final httpClient = await _createPinnedHttpClient(url);
-    _delegatePinnedHttpClient.close();
-    _delegatePinnedHttpClient = httpClient;
+    if (httpClient != null) {
+      _delegatePinnedHttpClient.close();
+      _delegatePinnedHttpClient = httpClient;
+    }
 
     // delegate the open operation to the pinned http client
     return _delegatePinnedHttpClient.openUrl(method, url);
@@ -472,6 +468,5 @@ class CertificatePinningHttpClient implements HttpClient {
   @override
   void close({bool force = false}) {
     _delegatePinnedHttpClient.close(force: force);
-    _isClosed = true;
   }
 }
