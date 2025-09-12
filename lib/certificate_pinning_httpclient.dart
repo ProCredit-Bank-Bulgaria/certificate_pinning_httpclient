@@ -16,16 +16,13 @@ class _CertificatePinningService {
   static const MethodChannel _channel =
       MethodChannel('certificate_pinning_httpclient');
 
-  static final Map<String, List<Uint8List>?> _hostCertificates =
-      <String, List<Uint8List>?>{};
-
-  /// Retrieves the certificates in the chain for the specified host. These are obtained at the platform level and we
-  /// cache them so subsequent requests don't require another probe.
+  /// Retrieves the certificates in the chain for the specified host. These are obtained at the platform level
   ///
   /// @param host is the URL specifying the host for which to retrieve the certificates (e.g. "www.example.com")
   /// @return a list of certificates (each as a Uint8list) for the host specified in the URL, null if an error occurred,
   /// or an empty list if no suitable certificates are available.
   static Future<List<Uint8List>?> _getHostCertificates(Uri url) async {
+    List<Uint8List>? hostCertificates = [];
     try {
       final arguments = <String, String>{
         "url": url.toString(),
@@ -33,8 +30,7 @@ class _CertificatePinningService {
       final List<Object?>? fetchedHostCertificates =
           await _channel.invokeMethod('fetchHostCertificates', arguments);
       if (fetchedHostCertificates?.isNotEmpty ?? false) {
-        // cache the obtained host certificates
-        _hostCertificates[url.host] = fetchedHostCertificates
+        hostCertificates = fetchedHostCertificates
             ?.map((c) => c as Uint8List?)
             .whereType<Uint8List>()
             .toList(growable: false);
@@ -43,12 +39,12 @@ class _CertificatePinningService {
       _log.d("$_tag: Error when fetching host certificates: $err");
       // do not throw an exception, but let the function return null
     }
-    return _hostCertificates[url.host];
+    return hostCertificates;
   }
 
   /// Gets all certificates of a host that match the pins for that host. A match is determined by comparing
   /// the certificate's SPKI's SHA256 digest with the list of pins. We firstly get the certificate chain for the
-  /// host (which may have been previously cached) and then we restrict it to those corresponding to pinned
+  /// host and then we restrict it to those corresponding to pinned
   /// certificates.
   ///
   /// @param url of the host that is being pinned
@@ -112,10 +108,6 @@ class _CertificatePinningService {
     _log.d(
         "$_tag: Pinned security context with ${pinCerts.length} trusted certs, from ${validPins.length} possible pins");
     return securityContext;
-  }
-
-  static Future<void> _removeCertificates(String host) async {
-    _hostCertificates[host] = null;
   }
 
   /// Computes the SHA256 digest of the Subject Public Key Info (SPKI) of an ASN1.DER encoded certificate.
@@ -209,7 +201,6 @@ class CertificatePinningHttpClient implements HttpClient {
 
     // reset host certificates and delegate pinned HttpClient connected host to force them to be recreated
     _log.d("$_tag: Pinning failure callback for $host");
-    _CertificatePinningService._removeCertificates(host);
     return false;
   }
 
