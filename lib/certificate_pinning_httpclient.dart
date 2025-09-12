@@ -209,7 +209,7 @@ class CertificatePinningHttpClient implements HttpClient {
   ///
   /// @param url for which to set up pinning
   /// @return the new HTTP client
-  Future<HttpClient?> _createPinnedHttpClient(Uri url) async {
+  Future<HttpClient> _createPinnedHttpClient(Uri url) async {
     final completer = Completer<HttpClient>();
     _createClientCompleter = completer;
 
@@ -279,10 +279,8 @@ class CertificatePinningHttpClient implements HttpClient {
     // and create a new one with the correct pinning, on every request
     final url = Uri(scheme: "https", host: host, port: port, path: path);
     final httpClient = await _createPinnedHttpClient(url);
-    if (httpClient != null) {
-      _delegatePinnedHttpClient.close();
-      _delegatePinnedHttpClient = httpClient;
-    }
+    _delegatePinnedHttpClient.close();
+    _delegatePinnedHttpClient = httpClient;
 
     // delegate the open operation to the pinned http client
     return _delegatePinnedHttpClient.open(method, host, port, path);
@@ -297,10 +295,8 @@ class CertificatePinningHttpClient implements HttpClient {
     // To ensure runtime MitM attacks, tear down the delegate pinned HttpClient
     // and create a new one with the correct pinning, on every request
     final httpClient = await _createPinnedHttpClient(url);
-    if (httpClient != null) {
-      _delegatePinnedHttpClient.close();
-      _delegatePinnedHttpClient = httpClient;
-    }
+    _delegatePinnedHttpClient.close();
+    _delegatePinnedHttpClient = httpClient;
 
     // delegate the open operation to the pinned http client
     return _delegatePinnedHttpClient.openUrl(method, url);
