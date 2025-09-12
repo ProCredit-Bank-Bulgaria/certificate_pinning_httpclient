@@ -1,7 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
-import 'dart:typed_data';
 import 'package:asn1lib/asn1lib.dart';
 import 'package:crypto/crypto.dart';
 import 'package:flutter/services.dart';
@@ -17,41 +16,35 @@ class _CertificatePinningService {
   static const MethodChannel _channel =
       MethodChannel('certificate_pinning_httpclient');
 
-  static final Map<String, List<Uint8List>?> _hostCertificates =
-      <String, List<Uint8List>?>{};
-
-  /// Retrieves the certificates in the chain for the specified host. These are obtained at the platform level and we
-  /// cache them so subsequent requests don't require another probe.
+  /// Retrieves the certificates in the chain for the specified host. These are obtained at the platform level
   ///
   /// @param host is the URL specifying the host for which to retrieve the certificates (e.g. "www.example.com")
   /// @return a list of certificates (each as a Uint8list) for the host specified in the URL, null if an error occurred,
   /// or an empty list if no suitable certificates are available.
   static Future<List<Uint8List>?> _getHostCertificates(Uri url) async {
-    if (_hostCertificates[url.host] == null) {
-      try {
-        final arguments = <String, String>{
-          "url": url.toString(),
-        };
-        final List<Object?>? fetchedHostCertificates =
-            await _channel.invokeMethod('fetchHostCertificates', arguments);
-        if (fetchedHostCertificates?.isNotEmpty ?? false) {
-          // cache the obtained host certificates
-          _hostCertificates[url.host] = fetchedHostCertificates
-              ?.map((c) => c as Uint8List?)
-              .whereType<Uint8List>()
-              .toList(growable: false);
-        }
-      } catch (err) {
-        _log.d("$_tag: Error when fetching host certificates: $err");
-        // do not throw an exception, but let the function return null
+    List<Uint8List>? hostCertificates;
+    try {
+      final arguments = <String, String>{
+        "url": url.toString(),
+      };
+      final List<Object?>? fetchedHostCertificates =
+          await _channel.invokeMethod('fetchHostCertificates', arguments);
+      if (fetchedHostCertificates?.isNotEmpty ?? false) {
+        hostCertificates = fetchedHostCertificates
+            ?.map((c) => c as Uint8List?)
+            .whereType<Uint8List>()
+            .toList(growable: false);
       }
+    } catch (err) {
+      _log.d("$_tag: Error when fetching host certificates: $err");
+      // do not throw an exception, but let the function return null
     }
-    return _hostCertificates[url.host];
+    return hostCertificates;
   }
 
   /// Gets all certificates of a host that match the pins for that host. A match is determined by comparing
   /// the certificate's SPKI's SHA256 digest with the list of pins. We firstly get the certificate chain for the
-  /// host (which may have been previously cached) and then we restrict it to those corresponding to pinned
+  /// host and then we restrict it to those corresponding to pinned
   /// certificates.
   ///
   /// @param url of the host that is being pinned
@@ -117,10 +110,6 @@ class _CertificatePinningService {
     return securityContext;
   }
 
-  static Future<void> _removeCertificates(String host) async {
-    _hostCertificates[host] = null;
-  }
-
   /// Computes the SHA256 digest of the Subject Public Key Info (SPKI) of an ASN1.DER encoded certificate.
   ///
   /// @param certificate for which to compute the SPKI digest
@@ -178,13 +167,6 @@ class CertificatePinningHttpClient implements HttpClient {
   // request forces a pinned HttpClient to be used.
   HttpClient _delegatePinnedHttpClient = HttpClient();
 
-  // the host to which the delegate pinned HttpClient delegate is connected and, optionally, pinning. Used to detect when to
-  // re-create the delegate pinned HttpClient.
-  String? _connectedHost;
-
-  // indicates whether the HttpClient has been closed by calling close().
-  bool _isClosed = false;
-
   Completer<HttpClient>? _createClientCompleter;
 
   // state required to implement getters and setters required by the HttpClient interface
@@ -219,8 +201,6 @@ class CertificatePinningHttpClient implements HttpClient {
 
     // reset host certificates and delegate pinned HttpClient connected host to force them to be recreated
     _log.d("$_tag: Pinning failure callback for $host");
-    _CertificatePinningService._removeCertificates(host);
-    _connectedHost = null;
     return false;
   }
 
@@ -244,9 +224,6 @@ class CertificatePinningHttpClient implements HttpClient {
               url, _validPins);
       newHttpClient = HttpClient(context: securityContext);
     }
-
-    // remember the connected host so we don't have to repeat this for connections to the same host
-    _connectedHost = url.host;
 
     // copy state from old HttpClient to the new one, including state held on this class which cannot be retrieved
     final HttpClient oldHttpClient = _delegatePinnedHttpClient;
@@ -274,6 +251,7 @@ class CertificatePinningHttpClient implements HttpClient {
     newHttpClient.badCertificateCallback = _pinningFailureCallback;
 
     completer.complete(newHttpClient);
+    _createClientCompleter = null;
 
     // provide the new http client with a pinned security context
     return newHttpClient;
@@ -289,30 +267,20 @@ class CertificatePinningHttpClient implements HttpClient {
   void updateSpkiHashes(List<String> spkiHashes) {
     _validPins = spkiHashes.toSet();
     _log.d("$_tag: Updated pins to ${_validPins.length} SPKI hashes");
-    // reset the connected host so that the next open operation will create a new pinned HttpClient
-    _connectedHost = null;
   }
 
   @override
   Future<HttpClientRequest> open(
       String method, String host, int port, String path) async {
-    // if already closed then just delegate
-    if (_isClosed) {
-      return _delegatePinnedHttpClient.open(method, host, port, path);
-    }
-
     if (_createClientCompleter != null) {
       await _createClientCompleter!.future;
     }
 
-    // if we have an active connection to a different host we need to tear down the delegate
-    // pinned HttpClient and create a new one with the correct pinning
-    if (_connectedHost != host) {
-      final url = Uri(scheme: "https", host: host, port: port, path: path);
-      final httpClient = await _createPinnedHttpClient(url);
-      _delegatePinnedHttpClient.close();
-      _delegatePinnedHttpClient = httpClient;
-    }
+    // To ensure runtime MitM attacks, tear down the delegate pinned HttpClient
+    // and create a new one with the correct pinning, on every request
+    final url = Uri(scheme: "https", host: host, port: port, path: path);
+    final httpClient = await _createPinnedHttpClient(url);
+    _delegatePinnedHttpClient = httpClient;
 
     // delegate the open operation to the pinned http client
     return _delegatePinnedHttpClient.open(method, host, port, path);
@@ -320,22 +288,14 @@ class CertificatePinningHttpClient implements HttpClient {
 
   @override
   Future<HttpClientRequest> openUrl(String method, Uri url) async {
-    // if already closed then just delegate
-    if (_isClosed) {
-      return _delegatePinnedHttpClient.openUrl(method, url);
-    }
-
     if (_createClientCompleter != null) {
       await _createClientCompleter!.future;
     }
 
-    // if we have an active connection to a different host we need to tear down the delegate
-    // pinned HttpClient and create a new one with the correct pinning
-    if (_connectedHost != url.host) {
-      final httpClient = await _createPinnedHttpClient(url);
-      _delegatePinnedHttpClient.close();
-      _delegatePinnedHttpClient = httpClient;
-    }
+    // To ensure runtime MitM attacks, tear down the delegate pinned HttpClient
+    // and create a new one with the correct pinning, on every request
+    final httpClient = await _createPinnedHttpClient(url);
+    _delegatePinnedHttpClient = httpClient;
 
     // delegate the open operation to the pinned http client
     return _delegatePinnedHttpClient.openUrl(method, url);
@@ -482,6 +442,5 @@ class CertificatePinningHttpClient implements HttpClient {
   @override
   void close({bool force = false}) {
     _delegatePinnedHttpClient.close(force: force);
-    _isClosed = true;
   }
 }
